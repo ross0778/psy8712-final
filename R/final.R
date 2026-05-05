@@ -28,16 +28,16 @@ df <- glassdoor_df %>% #this is to keep all the columns that have any review tex
     replace_na(pros, ""),
     replace_na(cons, ""),
     sep = " " #this adds a single space between the combined three texts in the single column
-  ),
-  id = row_number() #this makes a new column called id filled with the respective row number, included for later work
   )
+)
 #df$full_text_review[1] #check that the combined column looks good by extracting and displaying the first element - looks good
   
 set.seed(42) #set the seed for reproducibility
 sample_df <- df %>% #because the glassdoor dataset is so big (838,566 rows), we need to make a smaller sample from this dataset so it can run, while still taking as much as we can from the dataset
   group_by(overall_rating) %>% #this groups by overall rating so I can make sure we have a proportional representation of each rating in this sample dataset as to the original dataset
   slice_sample(prop = 10000 / nrow(df)) %>% #slice_sample draws a random sample from each group and prop = 10000/nrow(df) finds the proportion that's needed to get about 10,000 rows, which I believe should be able to run but still takes a good amount of data
-  ungroup() #ungroups the data
+  ungroup() %>% #ungroups the data
+  mutate(id = row_number())
 
 nrow(sample_df) #this is a check to make sure the rows and proportions look correct and align with the original dataset, which they do
 sample_df %>% 
@@ -64,8 +64,9 @@ embeddings_matrix <- do.call(rbind, embeddings_list) #used do.call instead of bi
 colnames(embeddings_matrix) <- paste0("emb_", seq_len(ncol(embeddings_matrix))) #this uses paste0 to name the columns in the matrix emb_1 through emb_768 for readability, seq_len() makes a sequence of 1 through the number of columns, which will be 768
 
 embeddings_tbl <- as_tibble(embeddings_matrix) %>% #convert embeddings_matrix into a tibble so we have a tidy data structure
-  bind_cols(id = sample_df$id) %>% #bind_cols() adds the identifier column
-  filter(if_all(everything(), ~ !is.na(.))) #drop any rows where the embedding API failed and returned NAs, need to do here before joining so all downstream datasets are clean
+  mutate(id = sample_df$id) %>% 
+  relocate(id) %>% 
+  filter(if_all(everything(), ~ !is.na(.)))
 
 # Topic Modeling
 corpus <- VCorpus(VectorSource(sample_df$full_text_review)) #makes a volatile corpus from full_text_review from the sample dataset
@@ -96,8 +97,8 @@ ids <- as.integer(rownames(slim_dtm)) #recovers original doc ids
 dtm_tbl <- slim_dtm %>% 
   as.matrix() %>% 
   as_tibble() %>% #this code converts the slim_dtm to a tibble for later use
-  mutate(id = as.integer(rownames(slim_dtm))) %>% #converts the rownames of slim_dtm to integers
-  mutate(id = as.integer(id)) #makes sure the id column is an integer, helped to fix the ids problem I was having
+  mutate(id = sample_df$id) %>%
+  relocate(id)
 
 dtm_lda <- readCorpus(slim_dtm, type = "slam") #readCorpus() converts the slim_dtm to the required format for topic modeling
 
@@ -307,6 +308,7 @@ model8 <- train(
 )
 model8
 
+#OLS Models
 model9 <- train(
   overall_rating ~ .,
   training_token,
@@ -363,6 +365,90 @@ model12 <- train(
 )
 model12
 
+# XGBoost Models
+#this forces xgboost to run sequentially to avoid external pointer issues
+stopImplicitCluster()
+registerDoSEQ()
+
+#xgboost tuning grid
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100),
+  max_depth = c(2, 4),
+  eta = c(0.05, 0.1),
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  subsample = 0.8
+)
+
+model13 <- train(
+  overall_rating ~ .,
+  data = training_token,
+  na.action = na.pass,
+  method = "xgbTree",
+  preProcess = c("nzv"),
+  tuneGrid = xgb_grid,
+  trControl = trainControl(
+    method = "cv",
+    number = 3,
+    verboseIter = TRUE,
+    allowParallel = FALSE
+  ),
+  metric = "RMSE"
+)
+model13
+
+model14 <- train(
+  overall_rating ~ .,
+  data = training_embed,
+  na.action = na.pass,
+  method = "xgbTree",
+  preProcess = c("nzv"),
+  tuneGrid = xgb_grid,
+  trControl = trainControl(
+    method = "cv",
+    number = 3,
+    verboseIter = TRUE,
+    allowParallel = FALSE
+  ),
+  metric = "RMSE"
+)
+model14
+
+model15 <- train(
+  overall_rating ~ .,
+  data = training_topic,
+  na.action = na.pass,
+  method = "xgbTree",
+  preProcess = c("nzv"),
+  tuneGrid = xgb_grid,
+  trControl = trainControl(
+    method = "cv",
+    number = 3,
+    verboseIter = TRUE,
+    allowParallel = FALSE
+  ),
+  metric = "RMSE"
+)
+model15
+
+model16 <- train(
+  overall_rating ~ .,
+  data = training_embed_topic,
+  na.action = na.pass,
+  method = "xgbTree",
+  preProcess = c("nzv"),
+  tuneGrid = xgb_grid,
+  trControl = trainControl(
+    method = "cv",
+    number = 3,
+    verboseIter = TRUE,
+    allowParallel = FALSE
+  ),
+  metric = "RMSE"
+)
+model16
+
 pred1 <- predict(model1, newdata = holdout_token)
 pred2 <- predict(model2, newdata = holdout_embed)
 pred3 <- predict(model3, newdata = holdout_topic)
@@ -375,10 +461,14 @@ pred9 <- predict(model9, newdata = holdout_token)
 pred10 <- predict(model10, newdata = holdout_embed)
 pred11 <- predict(model11, newdata = holdout_topic)
 pred12 <- predict(model12, newdata = holdout_embed_topic)
+pred13 <- predict(model13, newdata = holdout_token)
+pred14 <- predict(model14, newdata = holdout_embed)
+pred15 <- predict(model15, newdata = holdout_topic)
+pred16 <- predict(model16, newdata = holdout_embed_topic)
 
 table_tbl <- tibble(
-  algo = c(model1$method, model2$method, model3$method, model4$method, model5$method, model6$method, model7$method, model8$method, model9$method, model10$method, model11$method, model12$method),
-  model = rep(c("Tokens", "Embeddings", "Topics", "Embeddings and Topics"), times = 3),
+  algo = c(model1$method, model2$method, model3$method, model4$method, model5$method, model6$method, model7$method, model8$method, model9$method, model10$method, model11$method, model12$method, model13$method, model14$method, model15$method, model16$method),
+  model = rep(c("Tokens", "Embeddings", "Topics", "Embeddings and Topics"), times = 4),
   cv_rsq = c(max(model1$results$Rsquared, na.rm = TRUE),
              max(model2$results$Rsquared, na.rm = TRUE),
              max(model3$results$Rsquared, na.rm = TRUE),
@@ -390,7 +480,11 @@ table_tbl <- tibble(
              max(model9$results$Rsquared, na.rm = TRUE),
              max(model10$results$Rsquared, na.rm = TRUE),
              max(model11$results$Rsquared, na.rm = TRUE),
-             max(model12$results$Rsquared, na.rm = TRUE)
+             max(model12$results$Rsquared, na.rm = TRUE),
+             max(model13$results$Rsquared, na.rm = TRUE),
+             max(model14$results$Rsquared, na.rm = TRUE),
+             max(model15$results$Rsquared, na.rm = TRUE),
+             max(model16$results$Rsquared, na.rm = TRUE)
              ),
   ho_rsq = c(
     postResample(pred1, holdout_token$overall_rating)["Rsquared"],
@@ -404,7 +498,11 @@ table_tbl <- tibble(
     postResample(pred9, holdout_token$overall_rating)["Rsquared"],
     postResample(pred10, holdout_embed$overall_rating)["Rsquared"],
     postResample(pred11, holdout_topic$overall_rating)["Rsquared"],
-    postResample(pred12, holdout_embed_topic$overall_rating)["Rsquared"]
+    postResample(pred12, holdout_embed_topic$overall_rating)["Rsquared"],
+    postResample(pred13, holdout_topic$overall_rating)["Rsquared"],
+    postResample(pred14, holdout_topic$overall_rating)["Rsquared"],
+    postResample(pred15, holdout_topic$overall_rating)["Rsquared"],
+    postResample(pred16, holdout_topic$overall_rating)["Rsquared"]
   )
 ) %>% 
   mutate(across(c(cv_rsq, ho_rsq), ~ formatC(round(.x, 2), format = "f", digits = 2) %>% 
@@ -413,25 +511,22 @@ table_tbl
 write_csv(table_tbl, "../out/results.csv")
 
 #RQ1: Does the use of embeddings (using the nomic-embed-text LLM embeddings model) improve prediction of satisfaction beyond a rigorous tokenization strategy?
-#Comparing the ho_rsq of tokens and embeddings for each model, we can see that embeddings consistently showed improvement over tokens across all three models.
+#Comparing the ho_rsq of tokens and embeddings for each model, we can see that embeddings consistently showed improvement over tokens across all four models.
 #Therefore, it does seem as though the use of embeddings improves prediction of satisfaction beyond a rigorous tokenization strategy.
 #This implies that the semantic meaning of the words (which is defined by the embeddings) shows improvement over the tokens.
-#For example, for the ranger model shows an improvement in ho_rsq from .00 to .29, the OLS model from .01 to .32, and the elastic net model from .01 to .32.
+#For example, the elastic net model shows an improvement in ho_rsq from .16 (tokens) to .37. The other models show similar patterns.
 
 #RQ2: Does the use of topics improve prediction of satisfaction beyond a rigorous tokenization strategy?
-#This answer is more mixed. The use of topics shows slight improvement in the ho_rsq of ranger model over the rigorous tokenization strategy. However, this wasn't consistent across all the models.
-#For the ho_rsq in the OLS model, the use of topics showed very slight improvement over the tokenization strategy, while for the elastic net model, the tokenization strategy showed very slight or negligble improvement over the use of topics.
-#However, overall, tokenization showed very low predictive value.
+#In every model, the use of topics performed significantly worse than the rigorous tokenization strategy.
+#For example, the highest ho_rsq achieved by the use of topics for any model was .06.
 
 #RQ3: Does the use of embeddings plus topics improve prediction of satisfaction beyond either alone?
-#The use of embeddings + topics improved prediction of satisfaction beyond either alone for all models except for the OLS model.
-#However, this isn't entirely surprising that this pattern doesn't hold for the OLS model since OLS often doesn't perform as well in ML.
+#Yes, the use of embeddings + topics improved prediction of satisfaction beyond either alone.
+#Although this difference was much smaller for embeddings + topics vs. embeddings than for embeddings + topics vs. topics, combining embeddings and topics consistently showed improvement in the ho_rsq.
 
 #RQ4: What is the best prediction of overall job satisfaction achievable using text reviews as source data?
-#The best prediction of overall job satisfaction achievable using text reviews as source data was found in the elastic net model using embeddings + topics. This showed a ho_rsq of .54.
+#The best prediction of overall job satisfaction achievable using text reviews as source data was found in the elastic net model using embeddings + topics. This showed a ho_rsq of .41.
+
   
 save.image("../out/final.RData") #this saves the workspace to out/
   
-  
-
-

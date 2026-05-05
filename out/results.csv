@@ -1,13 +1,17 @@
 algo,model,cv_rsq,ho_rsq
-glmnet,Tokens,.03,.01
-glmnet,Embeddings,.37,.32
-glmnet,Topics,.04,.00
-glmnet,Embeddings and Topics,.43,.54
-ranger,Tokens,.03,.00
-ranger,Embeddings,.35,.29
-ranger,Topics,.09,.11
-ranger,Embeddings and Topics,.44,.46
-lm,Tokens,.09,.01
-lm,Embeddings,.33,.32
-lm,Topics,.04,.03
-lm,Embeddings and Topics,.04,.00
+glmnet,Tokens,.19,.16
+glmnet,Embeddings,.35,.37
+glmnet,Topics,.09,.06
+glmnet,Embeddings and Topics,.35,.41
+ranger,Tokens,.21,.18
+ranger,Embeddings,.33,.35
+ranger,Topics,.06,.06
+ranger,Embeddings and Topics,.33,.37
+lm,Tokens,.19,.16
+lm,Embeddings,.32,.34
+lm,Topics,.09,.06
+lm,Embeddings and Topics,.33,.38
+xgbTree,Tokens,.21,.18
+xgbTree,Embeddings,.32,.34
+xgbTree,Topics,.10,.06
+xgbTree,Embeddings and Topics,.32,.37
