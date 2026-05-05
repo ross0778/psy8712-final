@@ -1,0 +1,13 @@
+algo,model,cv_rsq,ho_rsq
+glmnet,Tokens,.03,.01
+glmnet,Embeddings,.37,.32
+glmnet,Topics,.04,.00
+glmnet,Embeddings and Topics,.43,.54
+ranger,Tokens,.03,.00
+ranger,Embeddings,.35,.29
+ranger,Topics,.09,.11
+ranger,Embeddings and Topics,.44,.46
+lm,Tokens,.09,.01
+lm,Embeddings,.33,.32
+lm,Topics,.04,.03
+lm,Embeddings and Topics,.04,.00
