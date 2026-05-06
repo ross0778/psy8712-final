@@ -64,9 +64,9 @@ embeddings_matrix <- do.call(rbind, embeddings_list) #used do.call instead of bi
 colnames(embeddings_matrix) <- paste0("emb_", seq_len(ncol(embeddings_matrix))) #this uses paste0 to name the columns in the matrix emb_1 through emb_768 for readability, seq_len() makes a sequence of 1 through the number of columns, which will be 768
 
 embeddings_tbl <- as_tibble(embeddings_matrix) %>% #convert embeddings_matrix into a tibble so we have a tidy data structure
-  mutate(id = sample_df$id) %>% 
-  relocate(id) %>% 
-  filter(if_all(everything(), ~ !is.na(.)))
+  mutate(id = sample_df$id) %>% #this adds the id column pulling from sample_df to make sure the ids match across all datasets
+  relocate(id) %>% #this moves the id column to the front of the tibble, improves readability
+  filter(if_all(everything(), ~ !is.na(.))) #this drops any rows where NAs were returned, did this now so all the following datasets are clean
 
 # Topic Modeling
 corpus <- VCorpus(VectorSource(sample_df$full_text_review)) #makes a volatile corpus from full_text_review from the sample dataset
@@ -95,10 +95,10 @@ keep_row <- row_totals > 0 #this makes a logical vector, is true for documents t
 slim_dtm <- slim_dtm[keep_row, ] #this filters the slim_dtm to keep only non-empty documents
 ids <- as.integer(rownames(slim_dtm)) #recovers original doc ids
 dtm_tbl <- slim_dtm %>% 
-  as.matrix() %>% 
+  as.matrix() %>% #converts slim_dtm to a matrix since as_tibble() can't directly handle the sparse matrix form
   as_tibble() %>% #this code converts the slim_dtm to a tibble for later use
-  mutate(id = sample_df$id) %>%
-  relocate(id)
+  mutate(id = sample_df$id) %>% #this adds the id column pulling from sample_df 
+  relocate(id) #this moves the id column to the front of the tibble, improves readability like with embeddings_tbl
 
 dtm_lda <- readCorpus(slim_dtm, type = "slam") #readCorpus() converts the slim_dtm to the required format for topic modeling
 
@@ -131,344 +131,344 @@ topics_tbl <- as_tibble(theta) %>% #as_tibble() changes the theta matrix to a ti
 token_df <- dtm_tbl %>%
   inner_join(sample_df %>% 
                select(id, overall_rating), by = "id") %>% #chose to use a join here so that it matches on id rather than position like it would with indexing
-  select(-id)
+  select(-id) #removes the id column, it's not needed after the joining
 
 #making the topics only dataset
 topic_df <- topics_tbl %>%
   inner_join(sample_df %>% #uses inner_join to join the datasets so it only keeps rows where id exists in both
                select(id, overall_rating), by = "id") %>% #selects id and overall_rating
-  select(-id) #removes the id column
+  select(-id) #removes the id column, it's not needed after the joining
 
 #making the embeddings only dataset
 embedding_df <- embeddings_tbl %>% 
   inner_join(sample_df %>% #uses inner_join to join the datasets so it only keeps rows where id exists in both
                select(id, overall_rating), by = "id") %>%  #selects id and overall_rating
-  select(-id) #removes the id column
+  select(-id) #removes the id column, it's not needed after the joining
 
 #embeddings + topics
 embedding_topic_df <- embeddings_tbl %>% 
   inner_join(topics_tbl, by = "id") %>% #uses inner_join to join both topics_tbl and sample_df
   inner_join(sample_df %>% 
                select(id, overall_rating), by = "id") %>% #selects id and overall_rating
-  select(-id) #removes the id column
+  select(-id) #removes the id column, it's not needed after the joining
 
 # Machine Learning Models
 
-set.seed(42)
-holdout_indices_token <- createDataPartition(token_df$overall_rating, p = 0.8, list = FALSE)
-holdout_indices_embed <- createDataPartition(embedding_df$overall_rating, p = 0.8, list = FALSE)
-holdout_indices_topic <- createDataPartition(topic_df$overall_rating, p = 0.8, list = FALSE)
-holdout_indices_embed_topic <- createDataPartition(embedding_topic_df$overall_rating, p = 0.8, list = FALSE)
+set.seed(42) #sets the seed for reproducibility
+holdout_indices_token <- createDataPartition(token_df$overall_rating, p = 0.8, list = FALSE) #creates the partition indices for the token dataset. Created separate partition indices for the following indices because the datasets may have different rows because of filtering for NAs
+holdout_indices_embed <- createDataPartition(embedding_df$overall_rating, p = 0.8, list = FALSE) #creates the partition indices for the embeddings dataset
+holdout_indices_topic <- createDataPartition(topic_df$overall_rating, p = 0.8, list = FALSE) #creates the partition indices for the topics dataset
+holdout_indices_embed_topic <- createDataPartition(embedding_topic_df$overall_rating, p = 0.8, list = FALSE) #creates the partition indices for the embeddings + topics dataset
 
-training_token <- token_df[holdout_indices_token, ]
-holdout_token <- token_df[-holdout_indices_token, ]
+training_token <- token_df[holdout_indices_token, ] #subsets token_df to the 80% training rows
+holdout_token <- token_df[-holdout_indices_token, ] #subsets token_df to the remaining 20% holdout rows
 
-training_embed <- embedding_df[holdout_indices_embed, ]
-holdout_embed <- embedding_df[-holdout_indices_embed, ]
+training_embed <- embedding_df[holdout_indices_embed, ] #subsets embedding_df to the 80% training rows
+holdout_embed <- embedding_df[-holdout_indices_embed, ] #subsets embedding_df to the remaining 20% holdout rows
 
-training_topic <- topic_df[holdout_indices_topic, ]
-holdout_topic <- topic_df[-holdout_indices_topic, ]
+training_topic <- topic_df[holdout_indices_topic, ] #subsets topic_df to the 80% training rows
+holdout_topic <- topic_df[-holdout_indices_topic, ] #subsets topic_df to the remaining 20% holdout rows
 
-training_embed_topic <- embedding_topic_df[holdout_indices_embed_topic, ]
-holdout_embed_topic <- embedding_topic_df[-holdout_indices_embed_topic, ]
+training_embed_topic <- embedding_topic_df[holdout_indices_embed_topic, ] #subsets embedding_topic_df to the 80% training rows
+holdout_embed_topic <- embedding_topic_df[-holdout_indices_embed_topic, ] #subsets embedding_topic_df to the remaining 20% rows
 
 #saveRDS(token_df, "../out/data.RDS")
 
 # Elastic Net Models
 model1 <- train(
-  overall_rating ~ .,
-  training_token,
-  na.action = na.pass,
-  method = "glmnet",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_token, #uses the training_token dataset
+  na.action = na.pass, #ignores missing data
+  method = "glmnet", #uses the elastic net algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   tuneGrid = expand.grid(
-    alpha = c(0, 1),
-    lambda = seq(0.0001, 0.1, length = 10)
+    alpha = c(0, 1), #alpha = 0 is ridge regression and alpha = 1 is lasso so having both here allows the model to find which type works best
+    lambda = seq(0.0001, 0.1, length = 10) #controls the strength of regularization
   ),
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model1
 
 model2 <- train(
-  overall_rating ~ .,
-  training_embed,
-  na.action = na.pass,
-  method = "glmnet",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed, #uses the training_embed dataset
+  na.action = na.pass, #ignores missing data
+  method = "glmnet", #uses the elastic net algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   tuneGrid = expand.grid(
-    alpha = c(0, 1),
-    lambda = seq(0.0001, 0.1, length = 10)
+    alpha = c(0, 1), #alpha = 0 is ridge regression and alpha = 1 is lasso so having both here allows the model to find which type works best
+    lambda = seq(0.0001, 0.1, length = 10) #controls the strength of regularization
   ),
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model2
 
 model3 <- train(
-  overall_rating ~ .,
-  training_topic,
-  na.action = na.pass,
-  method = "glmnet",
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_topic, #uses the training_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "glmnet", #uses the elastic net algo
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   tuneGrid = expand.grid(
-    alpha = c(0, 1),
-    lambda = seq(0.0001, 0.1, length = 10)
+    alpha = c(0, 1), #alpha = 0 is ridge regression and alpha = 1 is lasso so having both here allows the model to find which type works best
+    lambda = seq(0.0001, 0.1, length = 10) #controls the strength of regularization
   ),
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model3
 
 model4 <- train(
-  overall_rating ~ .,
-  training_embed_topic,
-  na.action = na.pass,
-  method = "glmnet",
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed_topic, #uses the training_embed_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "glmnet", #uses the elastic net algo
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   tuneGrid = expand.grid(
-    alpha = c(0, 1),
-    lambda = seq(0.0001, 0.1, length = 10)
+    alpha = c(0, 1), #alpha = 0 is ridge regression and alpha = 1 is lasso so having both here allows the model to find which type works best
+    lambda = seq(0.0001, 0.1, length = 10) #controls the strength of regularization
   ),
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model4
 
 # Random Forest Models
 model5 <- train(
-  overall_rating ~ .,
-  training_token,
-  na.action = na.pass,
-  method = "ranger",
-  tuneLength = 3,
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_token, #uses the training_token dataset
+  na.action = na.pass, #ignores missing data
+  method = "ranger", #uses the ranger algo
+  tuneLength = 3, #tells caret to try 3 combos of tuning parameters
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model5
 
 model6 <- train(
-  overall_rating ~ .,
-  training_embed,
-  na.action = na.pass,
-  method = "ranger",
-  tuneLength = 3,
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed, #uses the training_embed dataset
+  na.action = na.pass, #ignores missing data
+  method = "ranger", #uses the ranger algo
+  tuneLength = 3, #tells caret to try 3 combos of tuning parameters
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model6
 
 model7 <- train(
-  overall_rating ~ .,
-  training_topic,
-  na.action = na.pass,
-  method = "ranger",
-  tuneLength = 3,
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_topic, #uses the training_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "ranger", #uses the ranger algo
+  tuneLength = 3, #tells caret to try 3 combos of tuning parameters
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model7
 
 model8 <- train(
-  overall_rating ~ .,
-  training_embed_topic,
-  na.action = na.pass,
-  method = "ranger",
-  tuneLength = 3,
-  preProcess = c("nzv", "medianImpute","center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed_topic, #uses the training_embed_topic dataset
+  na.action = na.pass,  #ignores missing data
+  method = "ranger", #uses the ranger algo
+  tuneLength = 3, #tells caret to try 3 combos of tuning parameters
+  preProcess = c("nzv", "medianImpute","center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model8
 
 #OLS Models
 model9 <- train(
-  overall_rating ~ .,
-  training_token,
-  na.action = na.pass,
-  method = "lm",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_token, #uses the training_token dataset
+  na.action = na.pass, #ignores missing data
+  method = "lm", #uses the lm algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model9
 
 model10 <- train(
-  overall_rating ~ .,
-  training_embed,
-  na.action = na.pass,
-  method = "lm",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed, #uses the training_embed dataset
+  na.action = na.pass, #ignores missing data
+  method = "lm", #uses the lm algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model10
 
 model11 <- train(
-  overall_rating ~ .,
-  training_topic,
-  na.action = na.pass,
-  method = "lm",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_topic, #uses the training_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "lm", #uses the lm algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model11
 
 model12 <- train(
-  overall_rating ~ .,
-  training_embed_topic,
-  na.action = na.pass,
-  method = "lm",
-  preProcess = c("nzv", "medianImpute", "center", "scale"),
+  overall_rating ~ ., #predicts overall_rating using all the other columns as predictors
+  training_embed_topic, #uses the training_embed_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "lm", #uses the lm algo
+  preProcess = c("nzv", "medianImpute", "center", "scale"), #nzv removes near-zero variance predictors, medianImpute fills any remaining NAs with the median, and center and scale standardize the predictors
   trControl = trainControl(
-    method = "cv",
-    number = 5,
-    verboseIter = TRUE
+    method = "cv", #uses cross validation
+    number = 5, #uses five-fold cross validation
+    verboseIter = TRUE #prints progress to the console
   )
 )
 model12
 
 # XGBoost Models
 #this forces xgboost to run sequentially to avoid external pointer issues
-stopImplicitCluster()
-registerDoSEQ()
+stopImplicitCluster() #shuts down any parallel processing, needed to avoid the external pointer errors mentioned above
+registerDoSEQ() #registers a sequential backend so xgboost runs on a single core
 
 #xgboost tuning grid
-xgb_grid <- expand.grid(
-  nrounds = c(50, 100),
-  max_depth = c(2, 4),
-  eta = c(0.05, 0.1),
-  gamma = 0,
-  colsample_bytree = 0.8,
-  min_child_weight = 1,
-  subsample = 0.8
+xgb_grid <- expand.grid( #using expand.grid manually specifies the xgboost tuning grid opposed to tuneLength, this just gives more control over hyperparameters
+  nrounds = c(50, 100), #specifies the number of boosting rounds to run
+  max_depth = c(2, 4), #specifies the max depth of each tree
+  eta = c(0.05, 0.1), #specifies the learning rate
+  gamma = 0, #specifies the minimum loss reduction required to make a split
+  colsample_bytree = 0.8, #specifies the fraction of predictors randomly sampled for each tree
+  min_child_weight = 1, #specifies the minimum sum of instance weights needed in a child node
+  subsample = 0.8 #specifies the fraction of training rows randomly sampled for each tree
 )
 
 model13 <- train(
-  overall_rating ~ .,
-  data = training_token,
-  na.action = na.pass,
-  method = "xgbTree",
-  preProcess = c("nzv"),
-  tuneGrid = xgb_grid,
+  overall_rating ~ ., #predicts overall_rating using all other columns as predictors
+  data = training_token, #uses the training_token dataset
+  na.action = na.pass, #ignores missing data
+  method = "xgbTree", #uses xgbTree algo
+  preProcess = c("nzv"), #only used nzv here since xgboost handles unscaled data, centering or scaling not necessary
+  tuneGrid = xgb_grid, #uses the manually specifies grid from earlier
   trControl = trainControl(
-    method = "cv",
-    number = 3,
-    verboseIter = TRUE,
-    allowParallel = FALSE
+    method = "cv", #uses cross validation
+    number = 3, #uses three-fold cv to reduce runtime
+    verboseIter = TRUE, #prints progress to the console
+    allowParallel = FALSE #stops parallel processing within caret's resampling loop to avoid any conflicts
   ),
-  metric = "RMSE"
+  metric = "RMSE" #sets RMSE as the metric to optimize
 )
 model13
 
 model14 <- train(
-  overall_rating ~ .,
-  data = training_embed,
-  na.action = na.pass,
-  method = "xgbTree",
-  preProcess = c("nzv"),
-  tuneGrid = xgb_grid,
+  overall_rating ~ ., #predicts overall_rating using all other columns as predictors
+  data = training_embed, #uses the training_embed dataset
+  na.action = na.pass, #ignores missing data
+  method = "xgbTree", #uses xgbTree algo
+  preProcess = c("nzv"), #only used nzv here since xgboost handles unscaled data, centering or scaling not necessary
+  tuneGrid = xgb_grid, #uses the manually specifies grid from earlier
   trControl = trainControl(
-    method = "cv",
-    number = 3,
-    verboseIter = TRUE,
-    allowParallel = FALSE
+    method = "cv", #uses cross validation
+    number = 3, #uses three-fold cv to reduce runtime
+    verboseIter = TRUE,  #prints progress to the console
+    allowParallel = FALSE #stops parallel processing within caret's resampling loop to avoid any conflicts
   ),
-  metric = "RMSE"
+  metric = "RMSE"  #sets RMSE as the metric to optimize
 )
 model14
 
 model15 <- train(
-  overall_rating ~ .,
-  data = training_topic,
-  na.action = na.pass,
-  method = "xgbTree",
-  preProcess = c("nzv"),
-  tuneGrid = xgb_grid,
+  overall_rating ~ ., #predicts overall_rating using all other columns as predictors
+  data = training_topic, #uses the training_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "xgbTree", #uses xgbTree algo
+  preProcess = c("nzv"), #only used nzv here since xgboost handles unscaled data, centering or scaling not necessary
+  tuneGrid = xgb_grid, #uses the manually specifies grid from earlier
   trControl = trainControl(
-    method = "cv",
-    number = 3,
-    verboseIter = TRUE,
-    allowParallel = FALSE
+    method = "cv", #uses cross validation
+    number = 3, #uses three-fold cv to reduce runtime
+    verboseIter = TRUE, #prints progress to the console
+    allowParallel = FALSE #stops parallel processing within caret's resampling loop to avoid any conflicts
   ),
-  metric = "RMSE"
+  metric = "RMSE" #sets RMSE as the metric to optimize
 )
 model15
 
 model16 <- train(
-  overall_rating ~ .,
-  data = training_embed_topic,
-  na.action = na.pass,
-  method = "xgbTree",
-  preProcess = c("nzv"),
-  tuneGrid = xgb_grid,
+  overall_rating ~ ., #predicts overall_rating using all other columns as predictors
+  data = training_embed_topic, #uses the training_embed_topic dataset
+  na.action = na.pass, #ignores missing data
+  method = "xgbTree", #uses xgbTree algo
+  preProcess = c("nzv"), #only used nzv here since xgboost handles unscaled data, centering or scaling not necessary
+  tuneGrid = xgb_grid, #uses the manually specifies grid from earlier
   trControl = trainControl(
-    method = "cv",
-    number = 3,
-    verboseIter = TRUE,
-    allowParallel = FALSE
+    method = "cv", #uses cross validation
+    number = 3, #uses three-fold cv to reduce runtime
+    verboseIter = TRUE, #prints progress to the console
+    allowParallel = FALSE #stops parallel processing within caret's resampling loop to avoid any conflicts
   ),
-  metric = "RMSE"
+  metric = "RMSE" #sets RMSE as the metric to optimize
 )
 model16
 
-pred1 <- predict(model1, newdata = holdout_token)
-pred2 <- predict(model2, newdata = holdout_embed)
-pred3 <- predict(model3, newdata = holdout_topic)
-pred4 <- predict(model4, newdata = holdout_embed_topic)
-pred5 <- predict(model5, newdata = holdout_token)
-pred6 <- predict(model6, newdata = holdout_embed)
-pred7 <- predict(model7, newdata = holdout_topic)
-pred8 <- predict(model8, newdata = holdout_embed_topic)
-pred9 <- predict(model9, newdata = holdout_token)
-pred10 <- predict(model10, newdata = holdout_embed)
-pred11 <- predict(model11, newdata = holdout_topic)
-pred12 <- predict(model12, newdata = holdout_embed_topic)
-pred13 <- predict(model13, newdata = holdout_token)
-pred14 <- predict(model14, newdata = holdout_embed)
-pred15 <- predict(model15, newdata = holdout_topic)
-pred16 <- predict(model16, newdata = holdout_embed_topic)
+pred1 <- predict(model1, newdata = holdout_token) #generates predictions from model1 on the holdout token data
+pred2 <- predict(model2, newdata = holdout_embed) #generates predictions from model2 on the holdout embeddings data
+pred3 <- predict(model3, newdata = holdout_topic) #generates predictions from model3 on the holdout topics data
+pred4 <- predict(model4, newdata = holdout_embed_topic) #generates predictions from model4 on the holdout embeddings + topics data
+pred5 <- predict(model5, newdata = holdout_token) #generates predictions from model5 on the holdout token data
+pred6 <- predict(model6, newdata = holdout_embed) #generates predictions from model6 on the holdout embeddings data
+pred7 <- predict(model7, newdata = holdout_topic) #generates predictions from model7 on the holdout topics data
+pred8 <- predict(model8, newdata = holdout_embed_topic) #generates predictions from model8 on the holdout embeddings + topics data
+pred9 <- predict(model9, newdata = holdout_token) #generates predictions from model9 on the holdout token data
+pred10 <- predict(model10, newdata = holdout_embed) #generates predictions from model10 on the holdout embeddings data
+pred11 <- predict(model11, newdata = holdout_topic) #generates predictions from model11 on the holdout topics data
+pred12 <- predict(model12, newdata = holdout_embed_topic) #generates predictions from model12 on the holdout embeddings + topics data
+pred13 <- predict(model13, newdata = holdout_token) #generates predictions from model13 on the holdout token data
+pred14 <- predict(model14, newdata = holdout_embed) #generates predictions from model14 on the holdout embeddings data
+pred15 <- predict(model15, newdata = holdout_topic) #generates predictions from model15 on the holdout topics data
+pred16 <- predict(model16, newdata = holdout_embed_topic) #generates predictions from model16 on the holdout embeddings + topics data
 
-table_tbl <- tibble(
-  algo = c(model1$method, model2$method, model3$method, model4$method, model5$method, model6$method, model7$method, model8$method, model9$method, model10$method, model11$method, model12$method, model13$method, model14$method, model15$method, model16$method),
-  model = rep(c("Tokens", "Embeddings", "Topics", "Embeddings and Topics"), times = 4),
+table_tbl <- tibble( #creates the final results table as a tibble
+  algo = c(model1$method, model2$method, model3$method, model4$method, model5$method, model6$method, model7$method, model8$method, model9$method, model10$method, model11$method, model12$method, model13$method, model14$method, model15$method, model16$method), #uses the algo name for each model for readability in the table
+  model = rep(c("Tokens", "Embeddings", "Topics", "Embeddings and Topics"), times = 4), #labels each model with the aligning names
   cv_rsq = c(max(model1$results$Rsquared, na.rm = TRUE),
              max(model2$results$Rsquared, na.rm = TRUE),
              max(model3$results$Rsquared, na.rm = TRUE),
@@ -485,7 +485,7 @@ table_tbl <- tibble(
              max(model14$results$Rsquared, na.rm = TRUE),
              max(model15$results$Rsquared, na.rm = TRUE),
              max(model16$results$Rsquared, na.rm = TRUE)
-             ),
+             ), #all of the above chunk of code extracted the best cross-validated R-squared from each model's results. Used na.rm = TRUE to handle any NA values
   ho_rsq = c(
     postResample(pred1, holdout_token$overall_rating)["Rsquared"],
     postResample(pred2, holdout_embed$overall_rating)["Rsquared"],
@@ -503,12 +503,12 @@ table_tbl <- tibble(
     postResample(pred14, holdout_topic$overall_rating)["Rsquared"],
     postResample(pred15, holdout_topic$overall_rating)["Rsquared"],
     postResample(pred16, holdout_topic$overall_rating)["Rsquared"]
-  )
+  ) #used postResample() to find the ho_rsq for each model by comparing the predictions to the actual overall_rating values in the holdout set, then extracting only the Rsquared
 ) %>% 
   mutate(across(c(cv_rsq, ho_rsq), ~ formatC(round(.x, 2), format = "f", digits = 2) %>% 
-                  str_remove("^0")))
+                  str_remove("^0"))) #this formats both R^2 columns by rounding to two decimal places, forcing fixed decimal notation using formatC, and getting rid of the leading zero
 table_tbl
-write_csv(table_tbl, "../out/results.csv")
+write_csv(table_tbl, "../out/results.csv") #this saves the results table to a csv file in the out folder
 
 #RQ1: Does the use of embeddings (using the nomic-embed-text LLM embeddings model) improve prediction of satisfaction beyond a rigorous tokenization strategy?
 #Comparing the ho_rsq of tokens and embeddings for each model, we can see that embeddings consistently showed improvement over tokens across all four models.
