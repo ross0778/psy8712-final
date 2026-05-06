@@ -152,6 +152,8 @@ embedding_topic_df <- embeddings_tbl %>%
                select(id, overall_rating), by = "id") %>% #selects id and overall_rating
   select(-id) #removes the id column, it's not needed after the joining
 
+# Analysis
+
 # Machine Learning Models
 
 set.seed(42) #sets the seed for reproducibility
